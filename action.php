@@ -6,7 +6,6 @@
 
 // must be run within Dokuwiki
 if (!defined('DOKU_INC')) die();
-
 /**
  * Class action_plugin_discussion
  */
@@ -18,10 +17,9 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
     var $use_avatar = null;
     /** @var helper_plugin_discussion */
     var $helper = null;
-    var $pdo;
     var $settings;
-    var $editperpage;
     var $disDAO;
+    var $comperpage;
     /**
      * load helper
      */
@@ -29,6 +27,7 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
         require  dirname(__FILE__).'/discussionDAO.php';
         $this->disDAO = new dokuwiki\discussion\discussionDAO;
         $this->helper = plugin_load('helper', 'discussion');
+        $this->comperpage = $this->getConf('comperpage');
     }
 
     /**
@@ -358,7 +357,7 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
             session_write_close();
             $url = wl($ID);
         } else {
-            $url = wl($ID) . '#comment_' . $cid;
+            $url = wl($ID). '#comment_' . $cid;
         }
 
         if (function_exists('send_redirect')) {
@@ -404,24 +403,47 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
     protected function _show($reply = null, $edit = null) {
         global $ID;
         global $INFO;
+        
         // get .comments from DB
         if (!$INFO['exists']) return false;
         // if ($this->isDiscussionEnabled()) return false;
         if (!$_SERVER['REMOTE_USER'] && !$this->getConf('showguests')) return false;
+        // load data and get paging param
+        if(!empty($_GET['pagenum'] && $_GET['pagenum'] > 0))
+            $pagenum = $_GET['pagenum'];
+        else
+            $pagenum = 1;
 
-        // load data
-        $data = $this->disDAO->selectData($ID);
+        if ($pagenum == 1) {
+            $res = $this->disDAO->getOnePageId($ID, $pagenum);
+            if (!$res) {
+                $this->disDAO->groupIstPagination($ID, $this->comperpage);
+                $res = $this->disDAO->getOnePageId($ID, $pagenum);
+            }
+        } else {
+            $res = $this->disDAO->getOnePageId($ID, $pagenum-1);
+            if (!$res) {
+                $this->disDAO->groupIstPagination($ID, $this->comperpage);
+                $res = $this->disDAO->getOnePageId($ID, $pagenum-1);
+            }
+        }
+
+        $id = $res['comid'];
+        $data = $this->disDAO->selectData($ID, $this->comperpage, $id, $pagenum);
+        $comnum = count($this->disDAO->getAllValueOfId($ID));
+        $sum = ceil($comnum / $this->comperpage);
 
         // show discussion wrapper only on certain circumstances
         $cnt = empty($data) ? 0 : count($data);
         $show = false;
+
         if($cnt >= 1 || $this->getConf('allowguests') || isset($_SERVER['REMOTE_USER'])) {
             $show = true;
             // section title
             $title = $this->getLang('discussion');
             ptln('<div class="comment_wrapper" id="comment_wrapper">'); // the id value is used for visibility toggling the section
             ptln('<h2><a name="discussion__section" id="discussion__section">', 2);
-            ptln($title.'<span>('.count($data).')</span>', 4);
+            ptln($title.'<span>('.$comnum.')</span>', 4);
             ptln('</a></h2>', 2);
             ptln('<div class="level2 hfeed">', 2);
         }
@@ -442,6 +464,7 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
         if($show) {
             ptln('</div>', 2); // level2 hfeed
             ptln('</div>'); // comment_wrapper
+            $this->paginationNumber($sum, $pagenum, 'comment');   
         }
 
         return true;
@@ -459,9 +482,9 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
         global $ID;
         global $TEXT;
         global $INFO;
-
         $otxt = $TEXT; // set $TEXT to comment text for wordblock check
         $TEXT = $comment['raw'];
+
         if ($this->_isBannedComment()) {
             msg($this->getLang('banned_comment'), -1);
             return false;
@@ -472,13 +495,6 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
             return false;
         }
 
-        if ((!$this->getConf('allowguests'))
-                && ($comment['user']['id'] != $_SERVER['REMOTE_USER'])
-        ) {
-            return false; // guest comments not allowed
-        }
-
-
         if ($comment['date']['created']) {
             $date = strtotime($comment['date']['created']);
         } else {
@@ -488,7 +504,7 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
         if ($date == -1) {
             $date = time();
         }
-
+        
         $cid  = md5($comment['user']['id'].$date); // create a unique id
 
         // render the comment
@@ -516,7 +532,7 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
         $username = $INFO['client'];
         $userid = $comment['user']['id'];
         $this->disDAO->insertComment($data, $cid, $xhtml, $username, $parent, $ID, $userid);
-
+        $this->disDAO->delPagination($ID);
         $this->_redirect($cid);
         return true;
     }
@@ -531,7 +547,7 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
      */
     public function save($cids, $raw, $act = NULL) {
         global $ID;
-
+        global $INFO;
         if(!$cids) return false; // do nothing if we get no comment id
 
         if ($raw) {
@@ -548,23 +564,20 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
             $TEXT = $otxt; // restore global $TEXT
         }
 
-        $data = $this->disDAO->selectData($ID);
-        $userid = '';
         if (!is_array($cids)) $cids = array($cids);
         foreach ($cids as $cid) {
-            foreach ($data as $key => $value) {
-                if ($value['hash'] == $cid) {
-                    $userid = $value['userid'];
-                }
-            }
+            $username = $INFO['client'];
 
             // someone else was trying to edit our comment -> abort
-            if (($userid != $_SERVER['REMOTE_USER']) && (!$this->helper->isDiscussionMod())) return false;
+            if (($username != $_SERVER['REMOTE_USER']) && (!$this->helper->isDiscussionMod())) return false;
 
             if (!$raw) {          // remove the comment
                 // delete the comment in database
                 // paperclip hacked
                 $this->disDAO->delComment($cid);
+                //delete all data of the pageid in pagination table 
+                //if you want make better you can just delete pagenum less-than the pagenum of deleted-comment page
+                $this->disDAO->delPagination($ID);
                 $type = 'dc'; 
             }
         }
@@ -604,7 +617,7 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
      * @param $hidden
      */
     protected function _print_comment($key, &$data, $parent, $reply, $visible, $hidden) {
-        global $conf, $lang, $HIGH,$INFO;
+        global $conf, $lang, $HIGH, $INFO, $ID;
         $comment = $data[$key];
         $cid = $comment['hash'];
         //comment replies
@@ -621,7 +634,7 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
         $head = '<span class="vcard author">';
 
         $username = $comment['username'];
-//        $userid = $comment['userid'];
+        $userid = $comment['userid'];
         $created = $comment['time'];
 
         $head .= '<span class="fn">'.$username.'</span></span> '.
@@ -637,15 +650,8 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
         ptln('</div>', 6); // class="comment_body"
         //parent comment
         if ($comment['parent']) {
-            $key = '';
-            foreach ($data as $k => $v) {
-                if ($v['hash'] == $comment['parent']) {
-                    $parent = $data[$k]['parent'];
-                    $key = $k;
-                    break;
-                }
-            }
-            $this->_print_par_comment($key,$data,$parent,$deleted);
+            $res = $this->disDAO->getCommentDataByHash($ID, $comment['parent']);
+            $this->_print_par_comment($res,$parent,$deleted);
                 
         }else{
             echo '<div class="placeholder"></div>';
@@ -660,7 +666,7 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
             }
 
             // show edit, show/hide and delete button?
-            if ((($username == $_SERVER['REMOTE_USER']) && ($username != '')) || ($this->helper->isDiscussionMod())) {
+            if ((($username == $_SERVER['REMOTE_USER']) && ($userid != '')) || ($this->helper->isDiscussionMod())) {
                 $this->_button($cid, $lang['btn_delete'], 'delete');
             }
             ptln('</div>', 6); // class="comment_buttons"
@@ -677,10 +683,10 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
      * @param $parent
      * @param $deleted
      */
-    protected function _print_par_comment($key, &$data, $parent, $deleted){
+    protected function _print_par_comment($res, $parent, $deleted){
         global $conf, $lang, $HIGH;
-        if ($key) {
-            $comment = $data[$key];
+        if ($res) {
+            $comment = $res;
             $cid = $comment['hash'];
             // comment head with date and user data
             ptln('<div class="parent_hentry">', 4);
@@ -907,13 +913,17 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
      */
     protected function _button($cid, $label, $act, $jump = false) {
         global $ID;
-
+        if (!empty($_GET['pagenum']))
+            $pagenum = $_GET['pagenum'];
+        else
+            $pagenum = 1;
         $anchor = ($jump ? '#discussion__comment_form' : '' );
 
         ?>
         <form class="button discussion__<?php echo $act?>" method="get" action="<?php echo script().$anchor ?>">
           <div class="no">
             <input type="hidden" name="id" value="<?php echo $ID ?>" />
+            <input type="hidden" name="pagenum" value="<?php echo $pagenum ?>" />
             <input type="hidden" name="do" value="show" />
             <input type="hidden" name="comment" value="<?php echo $act ?>" />
             <input type="hidden" name="cid" value="<?php echo $cid ?>" />
@@ -1578,6 +1588,103 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
             return false;
     }
 
+    /**
+     * Print out a table to show the page number like:
+     * 1 ... 4 5 6 7 8 ... 100
+     *
+     * @param $sum total page number
+     * @param $page
+     * @param $content
+     */
+    private function paginationNumber($sum, $page, $content, $additionalParam = []) {
+        global $ID;
+        if ($sum <= 0 || $page <= 0 || $sum < $page) {
+            echo '';
+        }
+        else {
+            print "<div class='paperclip__pagenav'>";
+            print "<table id='paperclip__pagetable'>";
+            print "<tr>";
+            //print left part
+            $left = $page - 1; // the left part of pagination list
+            if ($left <= 4) {
+                if ($left > 0) {
+                    $this->printPageFromRange(1, $left, $content, $additionalParam);
+                }
+            } else {
+                // The table should look like:
+                // 1 ... 4 5
+                $this->printOnePagenum(1, $content, $additionalParam);
+                $this->printEllipsis();
+                $this->printPageFromRange($left - 1, $left, $content, $additionalParam);
+            }
+            //print centre part
+            $this->printPresentPagenum($page);
+            //print right part
+            $right = $sum - $page;
+            if ($right <= 4) {
+                if ($right > 0) {
+                    $this->printPageFromRange($page + 1, $sum, $content, $additionalParam);
+                }
+            } else {
+                // The table should look like:
+                // 7 8 ... 10
+                $this->printPageFromRange($page + 1, $page + 2, $content, $additionalParam);
+                $this->printEllipsis();
+                $this->printOnePagenum($sum, $content, $additionalParam);
+            }
+            // print the input and jump button
+            print "
+            <td class='paperclip__pagejump'>
+            <form action='/doku.php' method='get'>
+            <input type='hidden' name='id' value=$ID>
+            <input type='text' class='paperclip__pagejump__input' name='pagenum' required>";
+            foreach ($additionalParam as $param => $value) {
+                print "<input type='hidden' name=$param value=$value>";
+            }
+            print "<input type='submit' class='paperclip__pagejump__button' value='跳转'>
+            </form>
+            </td>";
+            print "</tr></table></div>";
+        }
+    }
+
+    /**
+     * Print a new cell in the table
+     * @param $page
+     */
+    private function printOnePagenum ($page, $content, $additionalParam = []) {
+        global $ID;
+        $addiQuery = '';
+        foreach ($additionalParam as $param => $value) {
+            $addiQuery .= "&$param=$value";
+        }
+        print "<td class='paperclip__pagenum'><a href='/doku.php?id=$ID&pagenum=$page$addiQuery' class='paperclip__pagehref'>$page</a></td>";
+    }
+
+    private function printPresentPagenum ($page) {
+        print "<td class='paperclip__pagenum__nohref'>$page</td>";
+    }
+
+    /**
+     * Print the ... in the table
+     */
+    private function printEllipsis () {
+        print "<td class='paperclip__pagenum__nohref'>...</td>";
+    }
+
+    /**
+     * @param $start
+     * @param $end The range includes the end
+     */
+    private function printPageFromRange($start, $end, $content, $additionalParam = []) {
+        if ($start > $end) return;
+
+        for ($i = $start; $i <= $end; $i++) {
+            $this->printOnePagenum($i, $content, $additionalParam);
+        }
+    }
+    
 }
 
 /**
