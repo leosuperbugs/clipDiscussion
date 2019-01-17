@@ -6,6 +6,8 @@
 
 // must be run within Dokuwiki
 if (!defined('DOKU_INC')) die();
+include_once 'aliyuncs/aliyun-php-sdk-core/Config.php';
+use Green\Request\V20180509 as Green;
 /**
  * Class action_plugin_discussion
  */
@@ -484,6 +486,10 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
         global $INFO;
         $otxt = $TEXT; // set $TEXT to comment text for wordblock check
         $TEXT = $comment['raw'];
+        if (!$this->_filter($comment['raw'])) {
+            msg($this->getLang('bad_words'), -1);
+            return false;
+        }
 
         if ($this->_isBannedComment()) {
             msg($this->getLang('banned_comment'), -1);
@@ -1682,6 +1688,51 @@ class action_plugin_discussion extends DokuWiki_Action_Plugin{
 
         for ($i = $start; $i <= $end; $i++) {
             $this->printOnePagenum($i, $content, $additionalParam);
+        }
+    }
+
+    /**
+     * filter comment
+     *
+     * @return bool
+     */
+    protected function _filter($comment){
+        date_default_timezone_set("PRC");
+        $ak = parse_ini_file("aliyun.ak.ini");
+        $iClientProfile = DefaultProfile::getProfile("cn-shanghai", $ak["accessKeyId"], $ak["accessKeySecret"]); // TODO
+        DefaultProfile::addEndpoint("cn-shanghai", "cn-shanghai", "Green", "green.cn-shanghai.aliyuncs.com");
+        $client = new DefaultAcsClient($iClientProfile);
+        $request = new Green\TextScanRequest();
+        $request->setMethod("POST");
+        $request->setAcceptFormat("JSON");
+        $task1 = array('dataId' =>  uniqid(),
+            'content' => $comment
+        );
+        
+        $request->setContent(json_encode(array("tasks" => array($task1),
+            "scenes" => array("antispam"))));
+        try {
+            $response = $client->getAcsResponse($request);
+            if(200 == $response->code){
+                $taskResults = $response->data;
+                foreach ($taskResults as $taskResult) {
+                    if(200 == $taskResult->code){
+                        $sceneResults = $taskResult->results;
+                        foreach ($sceneResults as $sceneResult) {
+                            $scene = $sceneResult->scene;
+                            $suggestion = $sceneResult->suggestion;
+                            //do something
+                            if ($suggestion == 'pass')
+                                return true;
+                            else
+                                return false;
+                        }
+                    }
+                }
+            }
+            return false;
+        } catch (Exception $e) {
+            echo $e;
         }
     }
     
