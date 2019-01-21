@@ -28,6 +28,7 @@ $lang['btn_change']            = '修改';
 $lang['statuschanged']         = '讨论状态变化了';
 $lang['wordblock']             = '您的评论由于类似垃圾评论而被阻止发表。';
 $lang['banned_comment']        = '您的账号已被限制评论，请稍后再试。';
+$lang['bad_words']        	   = '您的评论不符合规范，请重新编辑。';
 $lang['deleted_comment']       = '评论已删除';
 $lang['moderation']            = '你的评论已添加并且等待审核。';
 $lang['mail_newcomment']       = '新评论';
