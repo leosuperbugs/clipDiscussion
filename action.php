@@ -6,7 +6,6 @@
 
 // must be run within Dokuwiki
 if (!defined('DOKU_INC')) die();
-include 'aliyuncs/aliyun-php-sdk-core/Config.php';
 use Green\Request\V20180509 as Green;
 /**
  * Class action_plugin_discussion
